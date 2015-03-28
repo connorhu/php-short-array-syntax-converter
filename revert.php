@@ -27,6 +27,10 @@
  * @author	  Thomas Bachem <mail@thomasbachem.com>
  */
 
+use Symfony\Component\Finder\Finder;
+
+include_once(__DIR__ .'/vendor/autoload.php');
+
 // - - - - - HANDLE COMMAND LINE ARGUMENTS - - - - -
 
 $filePath = null;
@@ -52,101 +56,115 @@ if (!$filePath) {
 	exit(1);
 }
 
+function revertArraySyntax($filePath, $saveFile) {
+	// - - - - - READ ORIGINAL CODE - - - - -
 
-// - - - - - READ ORIGINAL CODE - - - - -
-
-$code = file_get_contents($filePath);
-$tokens = token_get_all($code);
+	$code = file_get_contents($filePath);
+	$tokens = token_get_all($code);
 
 
-// - - - - - PARSE CODE - - - - -
+	// - - - - - PARSE CODE - - - - -
 
-$replacements = array();
-$offset = 0;
-for ($i = 0; $i < count($tokens); ++$i) {
-	// Keep track of the current byte offset in the source code
-	$offset += strlen(is_array($tokens[$i]) ? $tokens[$i][1] : $tokens[$i]);
+	$replacements = array();
+	$offset = 0;
+	for ($i = 0; $i < count($tokens); ++$i) {
+		// Keep track of the current byte offset in the source code
+		$offset += strlen(is_array($tokens[$i]) ? $tokens[$i][1] : $tokens[$i]);
 
-	// "[" literal could either be an array index pointer
-	// or an array definition
-	if (is_string($tokens[$i]) && $tokens[$i] === "[") {
+		// "[" literal could either be an array index pointer
+		// or an array definition
+		if (is_string($tokens[$i]) && $tokens[$i] === "[") {
 
-		// Assume we're looking at an array definition by default
-		$isArraySyntax = true;
-		$subOffset = $offset;
-		for ($j = $i - 1; $j > 0; $j--) {
-			$subOffset -= strlen(is_array($tokens[$j]) ? $tokens[$j][1] : $tokens[$j]);
-
-			if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
-				$subOffset += strlen($tokens[$j][1]);
-				continue;
-			}
-			// Look for a previous variable or function return
-			// to make sure we're not looking at an array pointer
-			elseif (
-				(is_array($tokens[$j]) && (
-				$tokens[$j][0] === T_VARIABLE || $tokens[$j][0] === T_STRING
-				)
-				) || in_array($tokens[$j], array(')', ']', '}'), true)
-			) {
-				$isArraySyntax = false;
-				break;
-			} else {
-
-				break;
-			}
-		}
-
-		if ($isArraySyntax) {
-			// Replace "[" with "array("
-			$replacements[] = array(
-				'start' => $offset - strlen($tokens[$i]),
-				'end' => $offset,
-				'string' => 'array(',
-			);
-
-			// Look for matching closing bracket ("]")
+			// Assume we're looking at an array definition by default
+			$isArraySyntax = true;
 			$subOffset = $offset;
-			$openBracketsCount = 1;
-			for ($j = $i + 1; $j < count($tokens); ++$j) {
-				$subOffset += strlen(is_array($tokens[$j]) ? $tokens[$j][1] : $tokens[$j]);
+			for ($j = $i - 1; $j > 0; $j--) {
+				$subOffset -= strlen(is_array($tokens[$j]) ? $tokens[$j][1] : $tokens[$j]);
 
-				if (is_string($tokens[$j]) && $tokens[$j] == '[') {
-					++$openBracketsCount;
-				} elseif (is_string($tokens[$j]) && $tokens[$j] == ']') {
-					--$openBracketsCount;
-					if ($openBracketsCount == 0) {
-						// Replace "]" with ")"
-						$replacements[] = array(
-							'start' => $subOffset - 1,
-							'end' => $subOffset,
-							'string' => ')',
-						);
-						break;
+				if (is_array($tokens[$j]) && $tokens[$j][0] === T_WHITESPACE) {
+					$subOffset += strlen($tokens[$j][1]);
+					continue;
+				}
+				// Look for a previous variable or function return
+				// to make sure we're not looking at an array pointer
+				elseif (
+					(is_array($tokens[$j]) && (
+					$tokens[$j][0] === T_VARIABLE || $tokens[$j][0] === T_STRING
+					)
+					) || in_array($tokens[$j], array(')', ']', '}'), true)
+				) {
+					$isArraySyntax = false;
+					break;
+				} else {
+
+					break;
+				}
+			}
+
+			if ($isArraySyntax) {
+				// Replace "[" with "array("
+				$replacements[] = array(
+					'start' => $offset - strlen($tokens[$i]),
+					'end' => $offset,
+					'string' => 'array(',
+				);
+
+				// Look for matching closing bracket ("]")
+				$subOffset = $offset;
+				$openBracketsCount = 1;
+				for ($j = $i + 1; $j < count($tokens); ++$j) {
+					$subOffset += strlen(is_array($tokens[$j]) ? $tokens[$j][1] : $tokens[$j]);
+
+					if (is_string($tokens[$j]) && $tokens[$j] == '[') {
+						++$openBracketsCount;
+					} elseif (is_string($tokens[$j]) && $tokens[$j] == ']') {
+						--$openBracketsCount;
+						if ($openBracketsCount == 0) {
+							// Replace "]" with ")"
+							$replacements[] = array(
+								'start' => $subOffset - 1,
+								'end' => $subOffset,
+								'string' => ')',
+							);
+							break;
+						}
 					}
 				}
 			}
 		}
 	}
-}
 
 
-// - - - - - UPDATE CODE - - - - -
-// Apply the replacements to the source code
-$offsetChange = 0;
-foreach ($replacements as $replacement) {
-	$code = substr_replace($code, $replacement['string'], $replacement['start'] + $offsetChange, $replacement['end'] - $replacement['start']);
-	$offsetChange += strlen($replacement['string']) - ($replacement['end'] - $replacement['start']);
-}
-
-
-// - - - - - OUTPUT/WRITE NEW CODE - - - - -
-
-if ($saveFile) {
-	if (count($replacements) > 0) {
-		file_put_contents($filePath, $code);
-		echo count($replacements) . ' replacements';
+	// - - - - - UPDATE CODE - - - - -
+	// Apply the replacements to the source code
+	$offsetChange = 0;
+	foreach ($replacements as $replacement) {
+		$code = substr_replace($code, $replacement['string'], $replacement['start'] + $offsetChange, $replacement['end'] - $replacement['start']);
+		$offsetChange += strlen($replacement['string']) - ($replacement['end'] - $replacement['start']);
 	}
-} else {
-	print $code;
+
+
+	// - - - - - OUTPUT/WRITE NEW CODE - - - - -
+
+	if ($saveFile) {
+		if (count($replacements) > 0) {
+			file_put_contents($filePath, $code);
+			echo count($replacements) . ' replacements'. PHP_EOL;
+		}
+	} else {
+		print $code;
+	}
+}
+
+if (is_dir($filePath)) {
+	
+	$finder = new Finder();
+	$finder->name('*.php')->in($filePath);
+	
+	foreach ($finder as $file) {
+		revertArraySyntax($file->getRealpath(), $saveFile);
+	}
+}
+else {
+	revertArraySyntax($filePath, $saveFile);
 }
